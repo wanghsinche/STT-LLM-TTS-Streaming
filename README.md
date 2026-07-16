@@ -15,7 +15,7 @@ cp .env.example .env
 npm run download:asr-model
 ```
 
-Set `NVIDIA_API_KEY` in `.env`.
+Set `NVIDIA_API_KEY` in `.env`. Set `EXA_API_KEY` too if you want the assistant to use the `web_search` tool.
 
 If HuggingFace is slow, use a mirror:
 

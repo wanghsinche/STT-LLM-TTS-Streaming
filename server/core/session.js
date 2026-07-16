@@ -4,6 +4,7 @@ const { TextChunker } = require("./text-chunker");
 const { LocalSherpaASR } = require("../asr/local-sherpa");
 const { NvidiaLLM } = require("../llm/nvidia");
 const { EdgeTTS } = require("../tts/edge");
+const { executeToolCall, toolDefinitions } = require("../tools");
 
 const FILLER_DELAY_MS = 1200;
 const REASONING_FILLER_DELAY_MS = 2000;
@@ -12,7 +13,7 @@ const MAX_REASONING_FILLERS = 2;
 const FILLER_AFTER_PAUSE_MS = 350;
 const FILLERS = ["嗯，我看一下。", "好的，我想想。", "稍等，我看看。"];
 const REASONING_FILLERS = ["我再想想。", "这个我多琢磨一下。"];
-const SYSTEM_PROMPT = "你是一个低延迟语音助手。回答要自然、简短，适合被 TTS 朗读。不要使用 Markdown、列表符号、代码块、表格、标题或其他排版标记。";
+const SYSTEM_PROMPT = "你是一个低延迟语音助手。回答要自然、简短，适合被 TTS 朗读。不要使用 Markdown、列表符号、代码块、表格、标题或其他排版标记。需要当前时间时使用 get_current_time。需要实时信息、联网信息、新闻、价格、天气、资料查询或你不确定的新信息时使用 web_search。工具结果要自然转述，不要输出 JSON。";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +44,14 @@ function normalizeForTTS(text) {
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
     .replace(/[ \t]+/g, " ")
     .trim();
+}
+
+function stringifyToolResult(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 class VoiceSession {
@@ -123,26 +132,76 @@ class VoiceSession {
     try {
       console.log(`[${this.id}] LLM start: ${text}`);
       this.scheduleFiller(controller.signal);
-      await this.llm.streamChat({
+      const pushAssistantDelta = async (delta) => {
+        assistantText += delta;
+        process.stdout.write(delta);
+        this.sendJson(MessageType.LLM_DELTA, { text: delta, timestamp: Date.now() });
+        for (const chunk of this.textChunker.push(delta)) {
+          if (!realTTSStarted) {
+            realTTSStarted = true;
+            this.clearFillerTimer();
+            this.clearReasoningFillerTimer();
+          }
+          this.enqueueTTS(chunk, controller.signal);
+        }
+      };
+
+      const firstResponse = await this.llm.streamChat({
         messages,
         signal: controller.signal,
+        tools: toolDefinitions,
         onReasoning: async () => {
           if (!realTTSStarted) this.scheduleReasoningFiller(controller.signal);
         },
-        onDelta: async (delta) => {
-          assistantText += delta;
-          process.stdout.write(delta);
-          this.sendJson(MessageType.LLM_DELTA, { text: delta, timestamp: Date.now() });
-          for (const chunk of this.textChunker.push(delta)) {
-            if (!realTTSStarted) {
-              realTTSStarted = true;
-              this.clearFillerTimer();
-              this.clearReasoningFillerTimer();
-            }
-            this.enqueueTTS(chunk, controller.signal);
+        onDelta: pushAssistantDelta
+      });
+
+      if (firstResponse.toolCalls.length > 0 && !controller.signal.aborted) {
+        console.log(`[${this.id}] executing ${firstResponse.toolCalls.length} tool call(s)`);
+        const toolMessages = [];
+        for (let index = 0; index < firstResponse.toolCalls.length; index += 1) {
+          const toolCall = firstResponse.toolCalls[index];
+          const name = toolCall.function?.name || "unknown";
+          const toolCallId = toolCall.id || `call_${index}`;
+          if (!toolCall.id) toolCall.id = toolCallId;
+          console.log(`[${this.id}] tool start: ${name}`);
+          try {
+            const result = await executeToolCall(toolCall, controller.signal, this.config.tools);
+            toolMessages.push({
+              role: "tool",
+              tool_call_id: toolCallId,
+              content: stringifyToolResult(result)
+            });
+            console.log(`[${this.id}] tool end: ${name}`);
+          } catch (error) {
+            toolMessages.push({
+              role: "tool",
+              tool_call_id: toolCallId,
+              content: stringifyToolResult({ error: error.message || String(error) })
+            });
+            console.error(`[${this.id}] tool error ${name}:`, error.message || error);
           }
         }
-      });
+
+        this.textChunker.clear();
+        assistantText = "";
+        await this.llm.streamChat({
+          messages: [
+            ...messages,
+            {
+              role: "assistant",
+              content: firstResponse.text || null,
+              tool_calls: firstResponse.toolCalls
+            },
+            ...toolMessages
+          ],
+          signal: controller.signal,
+          onReasoning: async () => {
+            if (!realTTSStarted) this.scheduleReasoningFiller(controller.signal);
+          },
+          onDelta: pushAssistantDelta
+        });
+      }
       console.log(`[${this.id}] LLM stream complete, assistantText=${assistantText.length} chars`);
 
       for (const chunk of this.textChunker.flush()) {

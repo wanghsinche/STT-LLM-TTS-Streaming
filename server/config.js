@@ -48,5 +48,10 @@ module.exports = {
       "TTS_TLS_REJECT_UNAUTHORIZED",
       boolFromEnv("NVIDIA_TLS_REJECT_UNAUTHORIZED", true)
     )
+  },
+  tools: {
+    exaApiKey: process.env.EXA_API_KEY,
+    searchMaxResults: numberFromEnv("EXA_SEARCH_MAX_RESULTS", 5),
+    searchTimeoutMs: numberFromEnv("EXA_SEARCH_TIMEOUT_MS", 10000)
   }
 };

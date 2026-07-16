@@ -20,7 +20,7 @@ class NvidiaLLM {
     });
   }
 
-  async streamChat({ messages, signal, onDelta, onReasoning }) {
+  async streamChat({ messages, signal, onDelta, onReasoning, tools, toolChoice }) {
     const startedAt = Date.now();
     console.log(`[llm] stream request ${this.client.baseURL} model=${this.model} messages=${messages.length}`);
 
@@ -31,7 +31,9 @@ class NvidiaLLM {
         max_tokens: this.maxTokens,
         stream: true,
         temperature: this.temperature,
-        top_p: this.topP
+        top_p: this.topP,
+        ...(tools ? { tools } : {}),
+        ...(toolChoice ? { tool_choice: toolChoice } : {})
       },
       { signal }
     );
@@ -41,6 +43,7 @@ class NvidiaLLM {
     let chunkCount = 0;
     let contentCount = 0;
     let reasoningCount = 0;
+    const toolCalls = [];
     for await (const chunk of stream) {
       chunkCount += 1;
       if (chunkCount === 1) {
@@ -58,6 +61,20 @@ class NvidiaLLM {
         }
         if (onReasoning) await onReasoning(reasoning);
       }
+      for (const toolCall of chunk.choices?.[0]?.delta?.tool_calls || []) {
+        const index = toolCall.index ?? toolCalls.length;
+        if (!toolCalls[index]) {
+          toolCalls[index] = {
+            id: toolCall.id,
+            type: toolCall.type || "function",
+            function: { name: "", arguments: "" }
+          };
+        }
+        if (toolCall.id) toolCalls[index].id = toolCall.id;
+        if (toolCall.type) toolCalls[index].type = toolCall.type;
+        if (toolCall.function?.name) toolCalls[index].function.name += toolCall.function.name;
+        if (toolCall.function?.arguments) toolCalls[index].function.arguments += toolCall.function.arguments;
+      }
       const delta = chunk.choices?.[0]?.delta?.content || "";
       if (!delta) continue;
       contentCount += 1;
@@ -65,9 +82,10 @@ class NvidiaLLM {
       await onDelta(delta);
     }
 
-    console.log(`[llm] stream end in ${Date.now() - startedAt}ms chunks=${chunkCount} content=${contentCount} reasoning=${reasoningCount} chars=${fullText.length}`);
+    const finalToolCalls = toolCalls.filter(Boolean);
+    console.log(`[llm] stream end in ${Date.now() - startedAt}ms chunks=${chunkCount} content=${contentCount} reasoning=${reasoningCount} tool_calls=${finalToolCalls.length} chars=${fullText.length}`);
 
-    return fullText;
+    return { text: fullText, toolCalls: finalToolCalls };
   }
 }
 
