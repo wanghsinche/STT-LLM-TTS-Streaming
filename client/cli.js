@@ -76,6 +76,11 @@ function main() {
   let mic;
   let player;
   let ttsFormat = { codec: "mp3" };
+  let currentTTS = null;
+  let activeTTS = null;
+  const playbackQueue = [];
+  let playbackActive = false;
+  let turnEnded = false;
   let micMuted = false;
   let unmuteTimer = null;
 
@@ -101,17 +106,65 @@ function main() {
     }, Number.isFinite(unmuteDelayMs) ? unmuteDelayMs : 500);
   };
 
-  const finishPlaybackThenUnmute = () => {
-    if (!player) {
-      unmuteMicSoon();
+  const maybeUnmuteAfterTurn = () => {
+    if (!turnEnded || playbackActive || currentTTS || playbackQueue.length > 0) return;
+    unmuteMicSoon();
+  };
+
+  const writeSegmentChunk = (segment, chunk) => {
+    if (!segment.player || segment.player.stdin.destroyed || segment.player.stdin.writableEnded) {
+      segment.buffers.push(chunk);
       return;
     }
-    const currentPlayer = player;
-    currentPlayer.once("close", () => {
-      if (player === currentPlayer) player = null;
-      unmuteMicSoon();
+    segment.player.stdin.write(chunk);
+  };
+
+  const acceptSegmentChunk = (segment, chunk) => {
+    segment.bytes += chunk.length;
+    writeSegmentChunk(segment, chunk);
+  };
+
+  const finishSegmentInput = (segment) => {
+    if (!segment.player || segment.player.stdin.destroyed || segment.player.stdin.writableEnded) return;
+    segment.player.stdin.end();
+  };
+
+  const playAudioSegment = (segment) => new Promise((resolve) => {
+    const child = startAudioPlayback(segment.format);
+    segment.player = child;
+    activeTTS = segment;
+    player = child;
+    child.once("close", () => {
+      if (player === child) player = null;
+      if (activeTTS === segment) activeTTS = null;
+      console.log(`[tts audio bytes: ${segment.bytes}]`);
+      resolve();
     });
-    if (!currentPlayer.stdin.destroyed) currentPlayer.stdin.end();
+    child.once("error", (error) => {
+      console.error(`[playback] ${error.message || error}`);
+      if (player === child) player = null;
+      if (activeTTS === segment) activeTTS = null;
+      resolve();
+    });
+
+    for (const chunk of segment.buffers.splice(0)) {
+      writeSegmentChunk(segment, chunk);
+    }
+    if (segment.ended) finishSegmentInput(segment);
+  });
+
+  const processPlaybackQueue = async () => {
+    if (playbackActive) return;
+    playbackActive = true;
+    try {
+      while (playbackQueue.length > 0) {
+        await playAudioSegment(playbackQueue[0]);
+        playbackQueue.shift();
+      }
+    } finally {
+      playbackActive = false;
+      maybeUnmuteAfterTurn();
+    }
   };
 
   ws.on("open", () => {
@@ -130,10 +183,10 @@ function main() {
 
   ws.on("message", (data, isBinary) => {
     if (isBinary) {
-      if (!player || player.killed || player.stdin.destroyed) {
-        player = startAudioPlayback(ttsFormat);
+      if (!currentTTS) {
+        currentTTS = { format: ttsFormat, buffers: [], bytes: 0, ended: false, player: null };
       }
-      player.stdin.write(Buffer.from(data));
+      acceptSegmentChunk(currentTTS, Buffer.from(data));
       return;
     }
 
@@ -148,15 +201,27 @@ function main() {
       process.stdout.write(message.text);
     } else if (message.type === MessageType.TTS_START) {
       ttsFormat = message.format || ttsFormat;
+      turnEnded = false;
+      currentTTS = { format: ttsFormat, buffers: [], bytes: 0, ended: false, player: null };
+      playbackQueue.push(currentTTS);
+      void processPlaybackQueue();
       setMicMuted(true);
-      if (!player || player.killed || player.stdin.destroyed) {
-        player = startAudioPlayback(ttsFormat);
-      }
       process.stdout.write("\nTTS> ");
+    } else if (message.type === MessageType.TTS_END) {
+      if (currentTTS) {
+        currentTTS.ended = true;
+        finishSegmentInput(currentTTS);
+        currentTTS = null;
+      }
     } else if (message.type === MessageType.TURN_END) {
-      finishPlaybackThenUnmute();
+      turnEnded = true;
+      maybeUnmuteAfterTurn();
       process.stdout.write("\n--- turn end ---\n");
     } else if (message.type === MessageType.INTERRUPTED) {
+      currentTTS = null;
+      playbackQueue.length = 0;
+      activeTTS = null;
+      turnEnded = false;
       if (player) {
         player.kill("SIGTERM");
         player = null;

@@ -20,7 +20,7 @@ class NvidiaLLM {
     });
   }
 
-  async streamChat({ messages, signal, onDelta }) {
+  async streamChat({ messages, signal, onDelta, onReasoning }) {
     const startedAt = Date.now();
     console.log(`[llm] stream request ${this.client.baseURL} model=${this.model} messages=${messages.length}`);
 
@@ -53,7 +53,10 @@ class NvidiaLLM {
       const reasoning = chunk.choices?.[0]?.delta?.reasoning_content || "";
       if (reasoning) {
         reasoningCount += 1;
-        process.stdout.write(`[reasoning ${reasoning.length}]`);
+        if (reasoningCount === 1 || reasoningCount % 25 === 0) {
+          process.stdout.write(`[reasoning x${reasoningCount}]`);
+        }
+        if (onReasoning) await onReasoning(reasoning);
       }
       const delta = chunk.choices?.[0]?.delta?.content || "";
       if (!delta) continue;
