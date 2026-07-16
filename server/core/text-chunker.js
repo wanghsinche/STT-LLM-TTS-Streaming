@@ -1,9 +1,11 @@
 class TextChunker {
   constructor(options = {}) {
-    this.minChars = options.minChars || 6;
-    this.maxChars = options.maxChars || 16;
+    this.minChars = options.minChars || 24;
+    this.maxChars = options.maxChars || 48;
+    this.minSentenceChars = options.minSentenceChars || 8;
     this.buffer = "";
-    this.punctuation = new Set(["，", "。", "！", "？", "；", ",", ".", "!", "?", ";", "\n"]);
+    this.sentencePunctuation = new Set(["。", "！", "？", ".", "!", "?", "\n"]);
+    this.pausePunctuation = new Set(["，", "；", ",", ";", "、", "：", ":"]);
   }
 
   push(text) {
@@ -11,18 +13,27 @@ class TextChunker {
     this.buffer += text;
     const chunks = [];
 
-    while (this.buffer.length >= this.minChars) {
+    while (this.buffer.length >= this.minSentenceChars) {
       let cut = -1;
       const limit = Math.min(this.buffer.length, this.maxChars);
       for (let i = 0; i < limit; i += 1) {
-        if (this.punctuation.has(this.buffer[i])) {
+        if (this.sentencePunctuation.has(this.buffer[i]) && i + 1 >= this.minSentenceChars) {
           cut = i + 1;
           break;
         }
       }
 
+      if (cut < 0 && this.buffer.length >= this.minChars) {
+        for (let i = limit - 1; i >= this.minChars - 1; i -= 1) {
+          if (this.pausePunctuation.has(this.buffer[i])) {
+            cut = i + 1;
+            break;
+          }
+        }
+      }
+
       if (cut < 0 && this.buffer.length >= this.maxChars) {
-        cut = this.maxChars;
+        cut = limit;
       }
 
       if (cut < 0) break;

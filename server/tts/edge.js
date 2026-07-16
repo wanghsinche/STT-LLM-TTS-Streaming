@@ -60,6 +60,8 @@ class EdgeTTS {
     let stopped = false;
     let abort;
     let audioBytes = 0;
+    let firstAudioLogged = false;
+    const startedAt = Date.now();
     const timeoutPromise = new Promise((_, reject) => {
       timeout = setTimeout(() => {
         stopped = true;
@@ -78,6 +80,10 @@ class EdgeTTS {
       for await (const chunk of communicate.stream()) {
         if (stopped || signal?.aborted) return;
         if (chunk.type === "audio" && chunk.data?.length > 0) {
+          if (!firstAudioLogged) {
+            firstAudioLogged = true;
+            console.log(`[tts] first audio in ${Date.now() - startedAt}ms`);
+          }
           audioBytes += chunk.data.length;
           onAudio(Buffer.from(chunk.data));
         }

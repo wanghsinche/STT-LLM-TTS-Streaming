@@ -7,9 +7,12 @@ const { EdgeTTS } = require("../tts/edge");
 
 const FILLER_DELAY_MS = 1200;
 const REASONING_FILLER_DELAY_MS = 2000;
+const REASONING_FOLLOWUP_DELAY_MS = 6000;
+const MAX_REASONING_FILLERS = 2;
 const FILLER_AFTER_PAUSE_MS = 350;
-const FILLERS = ["嗯。。。", "收到", "emmmm。。。。"];
-const REASONING_FILLER = "我再想想。。。";
+const FILLERS = ["嗯，我看一下。", "好的，我想想。", "稍等，我看看。"];
+const REASONING_FILLERS = ["我再想想。", "这个我多琢磨一下。"];
+const SYSTEM_PROMPT = "你是一个低延迟语音助手。回答要自然、简短，适合被 TTS 朗读。不要使用 Markdown、列表符号、代码块、表格、标题或其他排版标记。";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,6 +23,26 @@ function getTTSFormat(format) {
   if (format.includes("mp3")) return { codec: "mp3", sample_rate: 24000, channels: 1 };
   if (format.includes("raw")) return { codec: "pcm_s16le", sample_rate: format.includes("16khz") ? 16000 : 24000, channels: 1 };
   return { codec: "mp3", sample_rate: 24000, channels: 1 };
+}
+
+function normalizeForTTS(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, "代码内容略。")
+    .replace(/!\[[^\]]*\]\([^\s)]+\)/g, "")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^\s)]+\)/g, "$1")
+    .replace(/^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)+\|?\s*$/gm, "")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s{0,3}>\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/\$\$([\s\S]*?)\$\$/g, "$1")
+    .replace(/\$([^\n$]+)\$/g, "$1")
+    .replace(/[*_~]{1,3}/g, "")
+    .replace(/\|/g, "，")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+    .replace(/[ \t]+/g, " ")
+    .trim();
 }
 
 class VoiceSession {
@@ -38,6 +61,7 @@ class VoiceSession {
     this.fillerTimer = null;
     this.reasoningFillerTimer = null;
     this.fillerSpoken = false;
+    this.reasoningFillerCount = 0;
     this.closed = false;
 
     this.asr.on("final", ({ text, timestamp }) => {
@@ -85,10 +109,11 @@ class VoiceSession {
     this.clearFillerTimer();
     this.clearReasoningFillerTimer();
     this.fillerSpoken = false;
+    this.reasoningFillerCount = 0;
 
     const userMessage = { role: "user", content: text };
     const messages = [
-      { role: "system", content: "你是一个低延迟语音助手。回答要自然、简短，适合被 TTS 朗读。" },
+      { role: "system", content: SYSTEM_PROMPT },
       ...this.history.slice(-8),
       userMessage
     ];
@@ -159,6 +184,10 @@ class VoiceSession {
     return FILLERS[Math.floor(Math.random() * FILLERS.length)];
   }
 
+  pickReasoningFiller() {
+    return REASONING_FILLERS[Math.min(this.reasoningFillerCount, REASONING_FILLERS.length - 1)];
+  }
+
   scheduleFiller(signal) {
     this.clearFillerTimer();
     this.fillerTimer = setTimeout(() => {
@@ -166,21 +195,25 @@ class VoiceSession {
       if (signal.aborted || this.fillerSpoken) return;
       const text = this.pickFiller();
       this.fillerSpoken = true;
+      this.reasoningFillerCount = Math.max(this.reasoningFillerCount, 1);
       console.log(`[${this.id}] TTS filler enqueue: ${text}`);
       this.enqueueTTS(text, signal, { filler: true });
     }, FILLER_DELAY_MS);
   }
 
   scheduleReasoningFiller(signal) {
-    if (this.fillerSpoken || this.reasoningFillerTimer) return;
+    if (this.reasoningFillerCount >= MAX_REASONING_FILLERS || this.reasoningFillerTimer) return;
     this.clearFillerTimer();
+    const delay = this.reasoningFillerCount === 0 ? REASONING_FILLER_DELAY_MS : REASONING_FOLLOWUP_DELAY_MS;
     this.reasoningFillerTimer = setTimeout(() => {
       this.reasoningFillerTimer = null;
-      if (signal.aborted || this.fillerSpoken) return;
+      if (signal.aborted || this.reasoningFillerCount >= MAX_REASONING_FILLERS) return;
+      const text = this.pickReasoningFiller();
       this.fillerSpoken = true;
-      console.log(`[${this.id}] TTS reasoning filler enqueue: ${REASONING_FILLER}`);
-      this.enqueueTTS(REASONING_FILLER, signal, { filler: true });
-    }, REASONING_FILLER_DELAY_MS);
+      this.reasoningFillerCount += 1;
+      console.log(`[${this.id}] TTS reasoning filler enqueue: ${text}`);
+      this.enqueueTTS(text, signal, { filler: true });
+    }, delay);
   }
 
   clearFillerTimer() {
@@ -196,16 +229,18 @@ class VoiceSession {
   }
 
   enqueueTTS(text, signal, options = {}) {
-    console.log(`[${this.id}] TTS enqueue: ${text}`);
+    const spokenText = options.filler ? text : normalizeForTTS(text);
+    if (!spokenText) return this.ttsChain;
+    console.log(`[${this.id}] TTS enqueue: ${spokenText}`);
     const next = this.ttsChain.catch(() => undefined).then(async () => {
-      if (signal.aborted || !text) return;
-      console.log(`[${this.id}] TTS start: ${text}`);
+      if (signal.aborted || !spokenText) return;
+      console.log(`[${this.id}] TTS start: ${spokenText}`);
       this.sendJson(MessageType.TTS_START, {
-        text,
+        text: spokenText,
         format: getTTSFormat(this.config.tts.format)
       });
       try {
-        await this.tts.synthesize(text, {
+        await this.tts.synthesize(spokenText, {
           signal,
           onAudio: (chunk) => this.sendBinary(chunk)
         });
@@ -214,7 +249,7 @@ class VoiceSession {
           console.error(`[${this.id}] TTS error:`, error.message || error);
         }
       } finally {
-        console.log(`[${this.id}] TTS end: ${text.length} chars`);
+        console.log(`[${this.id}] TTS end: ${spokenText.length} chars`);
         this.sendJson(MessageType.TTS_END, { timestamp: Date.now() });
         if (options.filler && !signal.aborted) {
           await sleep(FILLER_AFTER_PAUSE_MS);
