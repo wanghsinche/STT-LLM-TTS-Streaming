@@ -40,7 +40,7 @@ async function main() {
   });
   const payload = {
     messages: [{ role: "user", content: prompt }],
-    model: process.env.NVIDIA_MODEL || "openai/gpt-oss-120b",
+    model: process.env.NVIDIA_MODEL || "mistralai/mistral-small-4-119b-2603",
     max_tokens: numberFromEnv("NVIDIA_MAX_TOKENS", 4096),
     stream,
     temperature: numberFromEnv("NVIDIA_TEMPERATURE", 1),

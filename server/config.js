@@ -32,7 +32,7 @@ module.exports = {
   llm: {
     apiKey: process.env.NVIDIA_API_KEY,
     baseURL: stringFromEnv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-    model: stringFromEnv("NVIDIA_MODEL", "openai/gpt-oss-120b"),
+    model: stringFromEnv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"),
     maxTokens: numberFromEnv("NVIDIA_MAX_TOKENS", 4096),
     temperature: numberFromEnv("NVIDIA_TEMPERATURE", 1),
     topP: numberFromEnv("NVIDIA_TOP_P", 1),
@@ -42,7 +42,7 @@ module.exports = {
   tts: {
     voice: process.env.TTS_VOICE || "zh-CN-XiaoxiaoNeural",
     rate: process.env.TTS_RATE || "+0%",
-    format: process.env.TTS_FORMAT || "raw-16khz-16bit-mono-pcm",
+    format: process.env.TTS_FORMAT || "audio-24khz-48kbitrate-mono-mp3",
     timeoutMs: numberFromEnv("TTS_TIMEOUT_MS", 10000),
     tlsRejectUnauthorized: boolFromEnv(
       "TTS_TLS_REJECT_UNAUTHORIZED",

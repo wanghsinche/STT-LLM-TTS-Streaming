@@ -18,7 +18,7 @@
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "dotenv": "^16.4.7",
-    "node-edge-tts": "^1.2.10",
+    "edge-tts-universal": "^1.4.0",
     "openai": "^4.77.0",
     "sherpa-onnx": "^1.11.3",
     "ws": "^8.18.0"

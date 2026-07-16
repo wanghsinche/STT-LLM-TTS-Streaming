@@ -68,4 +68,4 @@ See `docs/ws_protocol.md`.
 
 - Client audio must be `pcm_s16le / 16000Hz / mono`.
 - Press Enter in the CLI client to send an interrupt.
-- Current TTS adapter uses the Node package `node-edge-tts` and defaults to 24k mono MP3.
+- Current TTS adapter uses `edge-tts-universal` and defaults to 24k mono MP3.

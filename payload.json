@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":""}],"model":"mistralai/mistral-small-4-119b-2603","reasoning_effort":"high","max_tokens":16384,"stream":false,"temperature":0.1,"top_p":1}
