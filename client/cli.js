@@ -230,6 +230,8 @@ function main() {
       process.stdout.write(`\n[interrupted: ${message.reason}]\n`);
     } else if (message.type === MessageType.ERROR) {
       console.error("server error:", message.message);
+      turnEnded = true;
+      maybeUnmuteAfterTurn();
     }
   });
 

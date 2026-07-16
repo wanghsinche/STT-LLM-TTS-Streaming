@@ -1,5 +1,39 @@
 const OpenAI = require("openai");
 
+const INLINE_TOOL_MARKER = "<|message_model|>";
+const INLINE_TOOL_ARGS_MARKER = "<|content_invoke_tool_json|>";
+const INLINE_TOOL_END_MARKER = "<|end_message|>";
+
+function parseInlineToolCalls(text) {
+  if (!text.includes(INLINE_TOOL_MARKER) || !text.includes(INLINE_TOOL_ARGS_MARKER)) {
+    return { text, toolCalls: [] };
+  }
+
+  const visibleText = text.slice(0, text.indexOf(INLINE_TOOL_MARKER));
+  const toolCalls = [];
+  const regex = /<\|message_model\|>([^<]+)<\|content_invoke_tool_json\|>([\s\S]*?)(?=<\|end_message\|>|<\|message_model\|>|$)/g;
+  let match;
+  while ((match = regex.exec(text))) {
+    const name = match[1].trim();
+    let args = match[2].trim();
+    try {
+      const parsed = JSON.parse(args);
+      if (parsed.name && parsed.args && typeof parsed.args === "object") {
+        args = JSON.stringify(parsed.args);
+      }
+    } catch {
+      // Keep raw arguments so the tool executor can report a normal parse error.
+    }
+    toolCalls.push({
+      id: `inline_call_${toolCalls.length}`,
+      type: "function",
+      function: { name, arguments: args }
+    });
+  }
+
+  return { text: visibleText.replaceAll(INLINE_TOOL_END_MARKER, ""), toolCalls };
+}
+
 class NvidiaLLM {
   constructor(config) {
     if (!config.apiKey) {
@@ -82,7 +116,9 @@ class NvidiaLLM {
       await onDelta(delta);
     }
 
-    const finalToolCalls = toolCalls.filter(Boolean);
+    const inlineParsed = parseInlineToolCalls(fullText);
+    const finalToolCalls = toolCalls.filter(Boolean).concat(inlineParsed.toolCalls);
+    fullText = inlineParsed.text;
     console.log(`[llm] stream end in ${Date.now() - startedAt}ms chunks=${chunkCount} content=${contentCount} reasoning=${reasoningCount} tool_calls=${finalToolCalls.length} chars=${fullText.length}`);
 
     return { text: fullText, toolCalls: finalToolCalls };

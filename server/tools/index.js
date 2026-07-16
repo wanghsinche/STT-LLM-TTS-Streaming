@@ -31,6 +31,49 @@ const toolDefinitions = [
         additionalProperties: false
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "compact",
+      description: "Rewrite long conversation history into a compact memory. Use this when the conversation context is getting long or repetitive before answering the user.",
+      parameters: {
+        type: "object",
+        properties: {
+          summary: {
+            type: "string",
+            description: "A concise Chinese summary of durable context: user preferences, decisions, unresolved tasks, important facts, and current working state. Do not include greetings or duplicate details."
+          },
+          keep_last_turns: {
+            type: "integer",
+            description: "How many recent user/assistant turns to keep verbatim after the compact summary. Defaults to 3."
+          }
+        },
+        required: ["summary"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "silence",
+      description: "Ignore this ASR input without replying. Use this when the input is background speech, ambient noise, accidental transcription, or clearly not addressed to the assistant.",
+      parameters: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            description: "Brief internal reason for ignoring the input."
+          },
+          confidence: {
+            type: "number",
+            description: "Confidence from 0 to 1 that the input should be ignored."
+          }
+        },
+        additionalProperties: false
+      }
+    }
   }
 ];
 
@@ -121,12 +164,49 @@ async function webSearch({ query }, signal, config = {}) {
   }
 }
 
-async function executeToolCall(toolCall, signal, config) {
+function compactHistory({ summary, keep_last_turns: keepLastTurns }, ctx = {}) {
+  if (!summary || typeof summary !== "string") {
+    throw new Error("compact requires a summary string");
+  }
+  if (!Array.isArray(ctx.history) || typeof ctx.setHistory !== "function") {
+    throw new Error("compact requires session history context");
+  }
+
+  const keepTurns = Number.isInteger(keepLastTurns) ? keepLastTurns : 3;
+  const keepMessages = Math.max(0, keepTurns) * 2;
+  const recent = keepMessages > 0 ? ctx.history.slice(-keepMessages) : [];
+  const compacted = [
+    {
+      role: "system",
+      content: `对话摘要：${summary.trim()}`
+    },
+    ...recent
+  ];
+
+  ctx.setHistory(compacted);
+  return {
+    compacted: true,
+    keptMessages: recent.length,
+    summaryChars: summary.trim().length
+  };
+}
+
+function silence({ reason = "not addressed to assistant", confidence = null } = {}) {
+  return {
+    silent: true,
+    reason,
+    confidence
+  };
+}
+
+async function executeToolCall(toolCall, signal, config, ctx) {
   const name = toolCall.function?.name || toolCall.name;
   const args = parseToolArguments(toolCall.function?.arguments || toolCall.arguments);
 
   if (name === "get_current_time") return getCurrentTime();
   if (name === "web_search") return webSearch(args, signal, config);
+  if (name === "compact") return compactHistory(args, ctx);
+  if (name === "silence") return silence(args);
 
   throw new Error(`Unknown tool: ${name || "missing_name"}`);
 }

@@ -69,3 +69,4 @@ See `docs/ws_protocol.md`.
 - Client audio must be `pcm_s16le / 16000Hz / mono`.
 - Press Enter in the CLI client to send an interrupt.
 - Current TTS adapter uses `edge-tts-universal` and defaults to 24k mono MP3.
+- The assistant can call tools for time, Exa web search, automatic context compaction, and silent no-op turns for ambient speech.

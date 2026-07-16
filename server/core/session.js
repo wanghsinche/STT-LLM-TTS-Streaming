@@ -11,9 +11,17 @@ const REASONING_FILLER_DELAY_MS = 2000;
 const REASONING_FOLLOWUP_DELAY_MS = 6000;
 const MAX_REASONING_FILLERS = 2;
 const FILLER_AFTER_PAUSE_MS = 350;
+const MAX_TOOL_ROUNDS = 5;
 const FILLERS = ["嗯，我看一下。", "好的，我想想。", "稍等，我看看。"];
-const REASONING_FILLERS = ["我再想想。", "这个我多琢磨一下。"];
-const SYSTEM_PROMPT = "你是一个低延迟语音助手。回答要自然、简短，适合被 TTS 朗读。不要使用 Markdown、列表符号、代码块、表格、标题或其他排版标记。需要当前时间时使用 get_current_time。需要实时信息、联网信息、新闻、价格、天气、资料查询或你不确定的新信息时使用 web_search。工具结果要自然转述，不要输出 JSON。";
+const REASONING_FILLERS = [
+  "我再想想。",
+  "我再看看。",
+  "我理一下。",
+  "我确认一下。",
+  "稍微等我一下。",
+  "这个我多琢磨一下。"
+];
+const SYSTEM_PROMPT = "你是一个低延迟语音助手。回答要自然、简短，适合被 TTS 朗读。不要使用 Markdown、列表符号、代码块、表格、标题或其他排版标记。如果 ASR 内容像环境声、旁人说话、误识别，或明显不是在跟你说话，必须调用 silence，不要解释、不要道歉、不要输出文字。只有明确是在问你、命令你，或延续当前对话时才回答。需要当前时间时使用 get_current_time。需要实时信息、联网信息、新闻、价格、天气、资料查询或你不确定的新信息时使用 web_search。当上下文太长、重复或旧消息影响效率时，先使用 compact，把长期有用信息压缩为摘要，再继续回答。compact 摘要只保留用户偏好、重要决定、未完成任务、当前工作状态和关键事实。工具结果要自然转述，不要输出 JSON。";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,6 +36,7 @@ function getTTSFormat(format) {
 
 function normalizeForTTS(text) {
   return text
+    .replace(/<\|[\s\S]*?\|>/g, "")
     .replace(/```[\s\S]*?```/g, "代码内容略。")
     .replace(/!\[[^\]]*\]\([^\s)]+\)/g, "")
     .replace(/`([^`]+)`/g, "$1")
@@ -52,6 +61,18 @@ function stringifyToolResult(value) {
   } catch {
     return String(value);
   }
+}
+
+function buildMessages(history, userMessage) {
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...history,
+    userMessage
+  ];
+}
+
+function isSilenceToolCall(toolCall) {
+  return (toolCall.function?.name || toolCall.name) === "silence";
 }
 
 class VoiceSession {
@@ -121,11 +142,7 @@ class VoiceSession {
     this.reasoningFillerCount = 0;
 
     const userMessage = { role: "user", content: text };
-    const messages = [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...this.history.slice(-8),
-      userMessage
-    ];
+    let messages = buildMessages(this.history, userMessage);
 
     let assistantText = "";
     let realTTSStarted = false;
@@ -146,35 +163,75 @@ class VoiceSession {
         }
       };
 
-      const firstResponse = await this.llm.streamChat({
-        messages,
-        signal: controller.signal,
-        tools: toolDefinitions,
-        onReasoning: async () => {
-          if (!realTTSStarted) this.scheduleReasoningFiller(controller.signal);
-        },
-        onDelta: pushAssistantDelta
-      });
+      const toolContext = {
+        history: this.history,
+        sessionId: this.id,
+        userMessage,
+        setHistory: (nextHistory) => {
+          this.history = nextHistory;
+          toolContext.history = nextHistory;
+        }
+      };
+      const turnMessages = [];
+      let finalText = "";
+      let ranTool = false;
 
-      if (firstResponse.toolCalls.length > 0 && !controller.signal.aborted) {
-        console.log(`[${this.id}] executing ${firstResponse.toolCalls.length} tool call(s)`);
-        const toolMessages = [];
-        for (let index = 0; index < firstResponse.toolCalls.length; index += 1) {
-          const toolCall = firstResponse.toolCalls[index];
+      for (let round = 0; round < MAX_TOOL_ROUNDS && !controller.signal.aborted; round += 1) {
+        let roundText = "";
+        console.log(`[${this.id}] LLM tool round ${round + 1}/${MAX_TOOL_ROUNDS}`);
+        const response = await this.llm.streamChat({
+          messages: [...messages, ...turnMessages],
+          signal: controller.signal,
+          tools: toolDefinitions,
+          onReasoning: async () => {
+            if (!realTTSStarted) this.scheduleReasoningFiller(controller.signal);
+          },
+          onDelta: async (delta) => {
+            roundText += delta;
+          }
+        });
+        roundText = response.text ?? roundText;
+
+        if (response.toolCalls.length === 0) {
+          finalText = roundText;
+          break;
+        }
+
+        console.log(`[${this.id}] executing ${response.toolCalls.length} tool call(s)`);
+        if (response.toolCalls.some(isSilenceToolCall)) {
+          controller.abort();
+          this.clearFillerTimer();
+          this.clearReasoningFillerTimer();
+          this.textChunker.clear();
+          this.ttsChain = Promise.resolve();
+          assistantText = "";
+          console.log(`[${this.id}] silence tool selected, ending turn without response`);
+          this.sendJson(MessageType.TURN_END, { timestamp: Date.now(), silent: true });
+          return;
+        }
+
+        turnMessages.push({
+          role: "assistant",
+          content: roundText || null,
+          tool_calls: response.toolCalls
+        });
+
+        for (let index = 0; index < response.toolCalls.length; index += 1) {
+          const toolCall = response.toolCalls[index];
           const name = toolCall.function?.name || "unknown";
-          const toolCallId = toolCall.id || `call_${index}`;
+          const toolCallId = toolCall.id || `call_${round}_${index}`;
           if (!toolCall.id) toolCall.id = toolCallId;
           console.log(`[${this.id}] tool start: ${name}`);
           try {
-            const result = await executeToolCall(toolCall, controller.signal, this.config.tools);
-            toolMessages.push({
+            const result = await executeToolCall(toolCall, controller.signal, this.config.tools, toolContext);
+            turnMessages.push({
               role: "tool",
               tool_call_id: toolCallId,
               content: stringifyToolResult(result)
             });
             console.log(`[${this.id}] tool end: ${name}`);
           } catch (error) {
-            toolMessages.push({
+            turnMessages.push({
               role: "tool",
               tool_call_id: toolCallId,
               content: stringifyToolResult({ error: error.message || String(error) })
@@ -182,25 +239,31 @@ class VoiceSession {
             console.error(`[${this.id}] tool error ${name}:`, error.message || error);
           }
         }
+        ranTool = true;
 
-        this.textChunker.clear();
-        assistantText = "";
-        await this.llm.streamChat({
-          messages: [
-            ...messages,
-            {
-              role: "assistant",
-              content: firstResponse.text || null,
-              tool_calls: firstResponse.toolCalls
-            },
-            ...toolMessages
-          ],
+        messages = buildMessages(this.history, userMessage);
+      }
+
+      if (ranTool && !finalText && !controller.signal.aborted) {
+        console.log(`[${this.id}] LLM final no-tools pass after ${MAX_TOOL_ROUNDS} tool rounds`);
+        let finalPassText = "";
+        const finalResponse = await this.llm.streamChat({
+          messages: [...messages, ...turnMessages],
           signal: controller.signal,
           onReasoning: async () => {
             if (!realTTSStarted) this.scheduleReasoningFiller(controller.signal);
           },
-          onDelta: pushAssistantDelta
+          onDelta: async (delta) => {
+            finalPassText += delta;
+          }
         });
+        finalText = finalResponse.text ?? finalPassText;
+      } else if (finalText) {
+        // handled below
+      }
+
+      if (finalText && !controller.signal.aborted) {
+        await pushAssistantDelta(finalText);
       }
       console.log(`[${this.id}] LLM stream complete, assistantText=${assistantText.length} chars`);
 
@@ -226,8 +289,12 @@ class VoiceSession {
       }
     } catch (error) {
       if (!controller.signal.aborted) {
+        this.clearFillerTimer();
+        this.clearReasoningFillerTimer();
+        this.textChunker.clear();
         console.error(`[${this.id}] LLM/TTS error:`, error.message || error);
         this.sendJson(MessageType.ERROR, { message: error.message || String(error) });
+        this.sendJson(MessageType.TURN_END, { timestamp: Date.now(), error: true });
       }
     } finally {
       this.clearFillerTimer();
@@ -244,7 +311,7 @@ class VoiceSession {
   }
 
   pickReasoningFiller() {
-    return REASONING_FILLERS[Math.min(this.reasoningFillerCount, REASONING_FILLERS.length - 1)];
+    return REASONING_FILLERS[Math.floor(Math.random() * REASONING_FILLERS.length)];
   }
 
   scheduleFiller(signal) {
