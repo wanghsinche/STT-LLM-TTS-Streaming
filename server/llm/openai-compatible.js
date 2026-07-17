@@ -34,10 +34,10 @@ function parseInlineToolCalls(text) {
   return { text: visibleText.replaceAll(INLINE_TOOL_END_MARKER, ""), toolCalls };
 }
 
-class NvidiaLLM {
+class OpenAICompatibleLLM {
   constructor(config) {
     if (!config.apiKey) {
-      throw new Error("NVIDIA_API_KEY is required");
+      throw new Error("LLM_API_KEY is required");
     }
     this.model = config.model;
     this.maxTokens = config.maxTokens;
@@ -56,7 +56,7 @@ class NvidiaLLM {
 
   async streamChat({ messages, signal, onDelta, onReasoning, tools, toolChoice }) {
     const startedAt = Date.now();
-    console.log(`[llm] stream request ${this.client.baseURL} model=${this.model} messages=${messages.length}`);
+    console.log(`[llm] chat stream request ${this.client.baseURL} model=${this.model} messages=${messages.length}`);
 
     const stream = await this.client.chat.completions.create(
       {
@@ -125,4 +125,4 @@ class NvidiaLLM {
   }
 }
 
-module.exports = { NvidiaLLM };
+module.exports = { OpenAICompatibleLLM };

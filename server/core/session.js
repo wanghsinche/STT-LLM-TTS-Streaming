@@ -2,14 +2,13 @@ const crypto = require("crypto");
 const { MessageType, jsonMessage } = require("../../shared/protocol");
 const { TextChunker } = require("./text-chunker");
 const { LocalSherpaASR } = require("../asr/local-sherpa");
-const { NvidiaLLM } = require("../llm/nvidia");
+const { OpenAICompatibleLLM } = require("../llm/openai-compatible");
 const { EdgeTTS } = require("../tts/edge");
 const { executeToolCall, toolDefinitions } = require("../tools");
 
 const FILLER_DELAY_MS = 1200;
 const REASONING_FILLER_DELAY_MS = 2000;
-const REASONING_FOLLOWUP_DELAY_MS = 6000;
-const MAX_REASONING_FILLERS = 2;
+const REASONING_FILLER_INTERVAL_MS = 6000;
 const FILLER_AFTER_PAUSE_MS = 350;
 const MAX_TOOL_ROUNDS = 5;
 const FILLERS = ["嗯，我看一下。", "好的，我想想。", "稍等，我看看。"];
@@ -82,7 +81,7 @@ class VoiceSession {
     this.id = crypto.randomUUID();
     this.history = [];
     this.asr = new LocalSherpaASR(config.asr);
-    this.llm = new NvidiaLLM(config.llm);
+    this.llm = new OpenAICompatibleLLM(config.llm);
     this.tts = new EdgeTTS(config.tts);
     this.textChunker = new TextChunker();
     this.abortController = null;
@@ -91,7 +90,6 @@ class VoiceSession {
     this.fillerTimer = null;
     this.reasoningFillerTimer = null;
     this.fillerSpoken = false;
-    this.reasoningFillerCount = 0;
     this.closed = false;
 
     this.asr.on("final", ({ text, timestamp }) => {
@@ -139,7 +137,6 @@ class VoiceSession {
     this.clearFillerTimer();
     this.clearReasoningFillerTimer();
     this.fillerSpoken = false;
-    this.reasoningFillerCount = 0;
 
     const userMessage = { role: "user", content: text };
     let messages = buildMessages(this.history, userMessage);
@@ -184,7 +181,7 @@ class VoiceSession {
           signal: controller.signal,
           tools: toolDefinitions,
           onReasoning: async () => {
-            if (!realTTSStarted) this.scheduleReasoningFiller(controller.signal);
+            if (!realTTSStarted) this.startReasoningFillerLoop(controller.signal);
           },
           onDelta: async (delta) => {
             roundText += delta;
@@ -198,6 +195,7 @@ class VoiceSession {
         }
 
         console.log(`[${this.id}] executing ${response.toolCalls.length} tool call(s)`);
+        if (!realTTSStarted) this.startReasoningFillerLoop(controller.signal);
         if (response.toolCalls.some(isSilenceToolCall)) {
           controller.abort();
           this.clearFillerTimer();
@@ -251,7 +249,7 @@ class VoiceSession {
           messages: [...messages, ...turnMessages],
           signal: controller.signal,
           onReasoning: async () => {
-            if (!realTTSStarted) this.scheduleReasoningFiller(controller.signal);
+            if (!realTTSStarted) this.startReasoningFillerLoop(controller.signal);
           },
           onDelta: async (delta) => {
             finalPassText += delta;
@@ -321,37 +319,38 @@ class VoiceSession {
       if (signal.aborted || this.fillerSpoken) return;
       const text = this.pickFiller();
       this.fillerSpoken = true;
-      this.reasoningFillerCount = Math.max(this.reasoningFillerCount, 1);
       console.log(`[${this.id}] TTS filler enqueue: ${text}`);
       this.enqueueTTS(text, signal, { filler: true });
     }, FILLER_DELAY_MS);
   }
 
-  scheduleReasoningFiller(signal) {
-    if (this.reasoningFillerCount >= MAX_REASONING_FILLERS || this.reasoningFillerTimer) return;
+  startReasoningFillerLoop(signal) {
+    if (this.reasoningFillerTimer) return;
     this.clearFillerTimer();
-    const delay = this.reasoningFillerCount === 0 ? REASONING_FILLER_DELAY_MS : REASONING_FOLLOWUP_DELAY_MS;
-    this.reasoningFillerTimer = setTimeout(() => {
-      this.reasoningFillerTimer = null;
-      if (signal.aborted || this.reasoningFillerCount >= MAX_REASONING_FILLERS) return;
-      const text = this.pickReasoningFiller();
-      this.fillerSpoken = true;
-      this.reasoningFillerCount += 1;
-      console.log(`[${this.id}] TTS reasoning filler enqueue: ${text}`);
-      this.enqueueTTS(text, signal, { filler: true });
-    }, delay);
-  }
-
-  clearFillerTimer() {
-    if (!this.fillerTimer) return;
-    clearTimeout(this.fillerTimer);
-    this.fillerTimer = null;
+    const enqueueNext = (delay) => {
+      this.reasoningFillerTimer = setTimeout(() => {
+        this.reasoningFillerTimer = null;
+        if (signal.aborted) return;
+        const text = this.pickReasoningFiller();
+        this.fillerSpoken = true;
+        console.log(`[${this.id}] TTS reasoning/tool filler enqueue: ${text}`);
+        this.enqueueTTS(text, signal, { filler: true });
+        enqueueNext(REASONING_FILLER_INTERVAL_MS);
+      }, delay);
+    };
+    enqueueNext(REASONING_FILLER_DELAY_MS);
   }
 
   clearReasoningFillerTimer() {
     if (!this.reasoningFillerTimer) return;
     clearTimeout(this.reasoningFillerTimer);
     this.reasoningFillerTimer = null;
+  }
+
+  clearFillerTimer() {
+    if (!this.fillerTimer) return;
+    clearTimeout(this.fillerTimer);
+    this.fillerTimer = null;
   }
 
   enqueueTTS(text, signal, options = {}) {

@@ -3,7 +3,7 @@
 Low-latency Node.js streaming voice relay server:
 
 ```text
-mic/ESP32 -> WebSocket PCM -> local sherpa-onnx ASR -> Nvidia streaming LLM -> Edge TTS -> WebSocket audio
+mic/ESP32 -> WebSocket PCM -> local sherpa-onnx ASR -> OpenAI-compatible streaming LLM -> Edge TTS -> WebSocket audio
 ```
 
 ## Setup
@@ -15,7 +15,23 @@ cp .env.example .env
 npm run download:asr-model
 ```
 
-Set `NVIDIA_API_KEY` in `.env`. Set `EXA_API_KEY` too if you want the assistant to use the `web_search` tool.
+Set `LLM_API_KEY`, `LLM_BASE_URL`, and `LLM_MODEL` in `.env`. Set `EXA_API_KEY` too if you want the assistant to use the `web_search` tool.
+
+For OpenAI-compatible providers such as ARK:
+
+```bash
+LLM_API_KEY=$ARK_API_KEY
+LLM_BASE_URL=https://ark-cn-beijing.bytedance.net/api/v3
+LLM_MODEL=ep-20251227174236-pbsxr
+```
+
+To test image input with Chat Completions:
+
+```bash
+LLM_TEST_IMAGE_URL=https://ark-project.tos-cn-beijing.ivolces.com/images/view.jpeg \
+LLM_TEST_PROMPT=这是哪里？ \
+npm run test:llm
+```
 
 If HuggingFace is slow, use a mirror:
 
@@ -23,11 +39,11 @@ If HuggingFace is slow, use a mirror:
 HF_ENDPOINT=https://hf-mirror.com npm run download:asr-model
 ```
 
-## Test Nvidia API
+## Test LLM API
 
 ```bash
-npm run test:nvidia
-npm run test:nvidia:stream
+npm run test:llm
+npm run test:llm:stream
 ```
 
 ## Run server

@@ -34,7 +34,7 @@ async function main() {
     timeoutMs: numberFromEnv("TTS_TIMEOUT_MS", 10000),
     tlsRejectUnauthorized: boolFromEnv(
       "TTS_TLS_REJECT_UNAUTHORIZED",
-      boolFromEnv("NVIDIA_TLS_REJECT_UNAUTHORIZED", true)
+      boolFromEnv("LLM_TLS_REJECT_UNAUTHORIZED", true)
     )
   };
 

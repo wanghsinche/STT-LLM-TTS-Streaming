@@ -10,10 +10,10 @@
     "server": "node server/index.js",
     "client": "node client/cli.js",
     "download:asr-model": "node scripts/download-asr-model.js",
-    "test:nvidia": "node scripts/test-nvidia-api.js",
-    "test:nvidia:stream": "node scripts/test-nvidia-api.js --stream",
+    "test:llm": "node scripts/test-llm-api.js",
+    "test:llm:stream": "node scripts/test-llm-api.js --stream",
     "test:tts": "node scripts/test-edge-tts.js",
-    "check": "node --check server/index.js && node --check server/tools/index.js && node --check client/cli.js && node --check scripts/download-asr-model.js && node --check scripts/test-nvidia-api.js && node --check scripts/test-edge-tts.js"
+    "check": "node --check server/index.js && node --check server/tools/index.js && node --check server/llm/openai-compatible.js && node --check client/cli.js && node --check scripts/download-asr-model.js && node --check scripts/test-llm-api.js && node --check scripts/test-edge-tts.js"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",

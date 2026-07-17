@@ -30,14 +30,14 @@ module.exports = {
     endpointSilenceMs: numberFromEnv("ASR_ENDPOINT_SILENCE_MS", 800)
   },
   llm: {
-    apiKey: process.env.NVIDIA_API_KEY,
-    baseURL: stringFromEnv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-    model: stringFromEnv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"),
-    maxTokens: numberFromEnv("NVIDIA_MAX_TOKENS", 4096),
-    temperature: numberFromEnv("NVIDIA_TEMPERATURE", 1),
-    topP: numberFromEnv("NVIDIA_TOP_P", 1),
-    timeoutMs: numberFromEnv("NVIDIA_TIMEOUT_MS", 30000),
-    tlsRejectUnauthorized: boolFromEnv("NVIDIA_TLS_REJECT_UNAUTHORIZED", true)
+    apiKey: process.env.LLM_API_KEY || process.env.ARK_API_KEY,
+    baseURL: stringFromEnv("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+    model: stringFromEnv("LLM_MODEL", "mistralai/mistral-small-4-119b-2603"),
+    maxTokens: numberFromEnv("LLM_MAX_TOKENS", 4096),
+    temperature: numberFromEnv("LLM_TEMPERATURE", 1),
+    topP: numberFromEnv("LLM_TOP_P", 1),
+    timeoutMs: numberFromEnv("LLM_TIMEOUT_MS", 30000),
+    tlsRejectUnauthorized: boolFromEnv("LLM_TLS_REJECT_UNAUTHORIZED", true)
   },
   tts: {
     voice: process.env.TTS_VOICE || "zh-CN-XiaoxiaoNeural",
@@ -46,7 +46,7 @@ module.exports = {
     timeoutMs: numberFromEnv("TTS_TIMEOUT_MS", 10000),
     tlsRejectUnauthorized: boolFromEnv(
       "TTS_TLS_REJECT_UNAUTHORIZED",
-      boolFromEnv("NVIDIA_TLS_REJECT_UNAUTHORIZED", true)
+      boolFromEnv("LLM_TLS_REJECT_UNAUTHORIZED", true)
     )
   },
   tools: {
